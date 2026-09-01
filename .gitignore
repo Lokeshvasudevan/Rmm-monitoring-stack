@@ -1,4 +1,34 @@
-.env
-redfish-exporter
+# Go
+/bin/
+/dist/
 *.test
+*.out
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Credentials / private keys
+*.pem
+*.key
+*.crt
+
+# Logs
+*.log
+logs/
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Python
 __pycache__/
+*.pyc
+
+# Temporary files
+tmp/
+temp/
+inventory.csv
+inventory.csv
