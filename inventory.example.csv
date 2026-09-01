@@ -1,0 +1,8 @@
+ip,vendor,site,gpu,gpu_count
+10.10.5.10,dell,dc1,h200,8
+10.10.5.11,dell,dc1,h200,8
+10.10.5.12,dell,dc1,h200,8
+10.10.6.10,lenovo,dc1,none,0
+10.10.6.11,lenovo,dc1,none,0
+10.10.7.10,supermicro,dc2,h200,8
+10.10.7.11,supermicro,dc2,h200,8

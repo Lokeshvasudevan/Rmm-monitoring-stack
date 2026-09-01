@@ -1,0 +1,340 @@
+{
+  "title": "Server Detail",
+  "uid": "redfish-server-detail",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {"from": "now-1h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "vendor",
+        "label": "OEM",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(redfish_system_health, vendor)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "gpu",
+        "label": "GPU Type",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(redfish_system_health{vendor=~\"$vendor\"}, gpu)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "instance",
+        "label": "BMC IP",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(redfish_system_health{vendor=~\"$vendor\", gpu=~\"$gpu\"}, instance)",
+        "includeAll": false,
+        "multi": false,
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "System Health",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"expr": "redfish_system_health{instance=\"$instance\"}", "instant": true, "legendFormat": "Health"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{"type": "value", "options": {"0": {"text": "CRITICAL", "color": "red", "index": 0}, "1": {"text": "OK", "color": "green", "index": 1}}}],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Max GPU Temp",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "targets": [{"expr": "max(redfish_gpu_temperature_celsius{instance=\"$instance\"})", "instant": true, "legendFormat": "Max GPU Temp"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "GPU Count",
+      "type": "stat",
+      "description": "Counted from GPU temperature sensors, not redfish_gpu_health: this BMC firmware does not expose GPUs as Redfish Processor/Accelerator resources.",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "targets": [{"expr": "count(redfish_gpu_temperature_celsius{instance=\"$instance\"}) or vector(0)", "instant": true, "legendFormat": "GPUs"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Total Node Power",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "targets": [{"expr": "sum(redfish_power_watts{instance=\"$instance\"}) or vector(0)", "instant": true, "legendFormat": "Watts"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}, {"color": "yellow", "value": 5000}, {"color": "red", "value": 10000}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "PSU Health",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "targets": [{"expr": "min(redfish_psu_health{instance=\"$instance\"}) or vector(1)", "instant": true, "legendFormat": "PSU"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{"type": "value", "options": {"0": {"text": "FAILED", "color": "red", "index": 0}, "1": {"text": "OK", "color": "green", "index": 1}}}],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Disk Health",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "targets": [{"expr": "min(redfish_disk_health{instance=\"$instance\"}) or vector(1)", "instant": true, "legendFormat": "Disk"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{"type": "value", "options": {"0": {"text": "FAILED", "color": "red", "index": 0}, "1": {"text": "OK", "color": "green", "index": 1}}}],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "GPU Temperatures",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 4}
+    },
+    {
+      "id": 8,
+      "title": "GPU Temperature (°C)",
+      "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 5},
+      "targets": [{"expr": "redfish_gpu_temperature_celsius{instance=\"$instance\"}", "legendFormat": "GPU {{name}}"}],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["last", "max"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {"lineWidth": 2, "thresholdsStyle": {"mode": "line+area"}},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "title": "Hardware Health",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 15}
+    },
+    {
+      "id": 10,
+      "title": "GPU Status (by Temperature)",
+      "description": "This BMC firmware never reports GPUs as Processor/Accelerator resources, so redfish_gpu_health has no series here — permanently empty, not a bug. Shows per-GPU status derived from temperature instead, against the same 70°C/80°C thresholds used elsewhere.",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [{"expr": "redfish_gpu_temperature_celsius{instance=\"$instance\"}", "instant": true, "format": "table", "legendFormat": ""}],
+      "options": {"sortBy": [{"displayName": "Value", "desc": true}], "footer": {"show": false}},
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Value"},
+            "properties": [
+              {"id": "unit", "value": "celsius"},
+              {"id": "custom.displayMode", "value": "color-background"},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "title": "CPU Health",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 16},
+      "targets": [{"expr": "min(redfish_cpu_health{instance=\"$instance\"}) or vector(1)", "instant": true, "legendFormat": "CPU"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{"type": "value", "options": {"0": {"text": "CRITICAL", "color": "red", "index": 0}, "1": {"text": "OK", "color": "green", "index": 1}}}],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "title": "Memory Health",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 16},
+      "targets": [{"expr": "min(redfish_memory_health{instance=\"$instance\"}) or vector(1)", "instant": true, "legendFormat": "Memory"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{"type": "value", "options": {"0": {"text": "CRITICAL", "color": "red", "index": 0}, "1": {"text": "OK", "color": "green", "index": 1}}}],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "title": "PSU Detail",
+      "type": "table",
+      "gridPos": {"h": 4, "w": 12, "x": 12, "y": 20},
+      "targets": [{"expr": "redfish_psu_health{instance=\"$instance\"}", "instant": true, "format": "table", "legendFormat": ""}],
+      "options": {"sortBy": [{"displayName": "Value", "desc": false}], "footer": {"show": false}},
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Value"},
+            "properties": [
+              {"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "FAILED", "color": "red", "index": 0}, "1": {"text": "OK", "color": "green", "index": 1}}}]},
+              {"id": "custom.displayMode", "value": "color-background"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "title": "Power & Cooling",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 24}
+    },
+    {
+      "id": 15,
+      "title": "Node Power (W)",
+      "type": "timeseries",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 25},
+      "targets": [{"expr": "redfish_power_watts{instance=\"$instance\"}", "legendFormat": "{{name}}"}],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["last", "max"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": {"lineWidth": 2},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 16,
+      "title": "Fan Speed (RPM)",
+      "type": "timeseries",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 25},
+      "targets": [{"expr": "redfish_fan_speed_rpm{instance=\"$instance\"}", "legendFormat": "{{name}}"}],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["last", "max"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rotrpm",
+          "custom": {"lineWidth": 2},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 17,
+      "title": "Temperature Sensors",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 34}
+    },
+    {
+      "id": 18,
+      "title": "All Temperature Sensors (°C)",
+      "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 35},
+      "targets": [{"expr": "redfish_temperature_celsius{instance=\"$instance\"}", "legendFormat": "{{name}}"}],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["last", "max"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {"lineWidth": 2, "thresholdsStyle": {"mode": "line"}},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 19,
+      "title": "GPU Inventory",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 45}
+    },
+    {
+      "id": 20,
+      "title": "GPU Inventory",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 46},
+      "targets": [{"expr": "redfish_gpu_info{instance=\"$instance\"}", "instant": true, "format": "table", "legendFormat": ""}],
+      "options": {"sortBy": [], "footer": {"show": false}},
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "Value"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]}
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+# Credentials are loaded from the environment; never commit passwords here.
+hosts:
+  default:
+    username: monitoring
+    password_env: REDFISH_PASSWORD
+
+  # These 5 AMI MegaRAC-based GPU tray BMCs (HPE chassis, "HPE" vendor label
+  # in inventory) return Security.1.0.AccessDenied partway through a crawl at
+  # the default concurrency of 4 — an anti-hammering lockout, not a
+  # credentials problem (Processors/health resources fetched early in the
+  # crawl succeed; Chassis/Thermal fetched later in the same crawl get
+  # denied, so redfish_gpu_health/info come through but
+  # redfish_gpu_temperature_celsius never does). Dropped per-host concurrency
+  # to 1 so this exporter never has more than one Basic-Auth request open
+  # against these controllers at a time. No credentials needed here — they
+  # inherit hosts.default.
+  "10.20.32.114": { concurrency: 1 }
+  "10.20.32.122": { concurrency: 1 }
+  "10.20.32.123": { concurrency: 1 }
+  "10.20.32.124": { concurrency: 1 }
+  "10.20.32.125": { concurrency: 1 }
+
+# Per-BMC overrides are optional.
+# "10.10.7.10":
+#   username: monitoring_smc
+#   password_env: REDFISH_SMC_PASSWORD
+# 10.20.32.57 has been repeatedly timing out on individual GETs across
+# unrelated endpoints (Power, Thermal, several Sensors) — a real
+# responsiveness problem on that specific BMC, not a config issue. 5s was too
+# tight for it and each timeout+retry burned ~10s of crawl budget; raised so
+# a merely-slow-but-alive controller doesn't get marked down over it. This
+# does not fix that BMC — it should still be checked directly (XCC load,
+# management-network path to that host) — it just stops it from flapping the
+# whole fleet's dashboards while that's investigated.
+timeout: 8s
+# Hard cap for one complete BMC collection. This prevents a slow OEM endpoint
+# from leaving the Prometheus scrape or an interactive curl request hanging.
+# Measured live crawl times on this fleet run 60-100s for healthy hosts, but
+# 10.20.32.57 has been measured up to 152s (see `timeout` above for why).
+# Raised again to keep that host's occasional legitimate-but-slow crawl from
+# being killed mid-flight, while staying under the Prometheus job's
+# scrape_timeout (see prometheus/prometheus.yml).
+scrape_timeout: 200s
+# One retry tolerates transient BMC failures without allowing an unresponsive
+# optional endpoint to consume the entire collection deadline.
+retries: 1
+cache_ttl: 6m
+# Caps how many BMCs are crawled at once across the WHOLE target list (as
+# opposed to `concurrency` below, which only bounds requests against a
+# single BMC). Without this, a cold cache — e.g. right after this exporter
+# restarts, or a simultaneous cache_ttl expiry across many hosts — lets every
+# target's crawl fire at the same moment and floods the shared BMC/OOB
+# management network instead of just one controller.
+# Raised 12->30 after the fleet grew from 15 to 85 hosts. At the old cap of
+# 12, a full cold-cache sweep queues in batches of 12 at ~60-100s/batch —
+# 85/12 ≈ 7 batches, ~500-700s worst case — which blows well past both
+# cache_ttl (6m) and the Prometheus job's scrape_timeout (see
+# prometheus/prometheus.yml), so most of the fleet would fail its first
+# scrape after every restart. At 30, worst-case queue depth drops to
+# 85/30 ≈ 3 batches (~180-300s), which fits inside cache_ttl so the fleet
+# fully warms within one cycle. Re-check this math if the fleet grows
+# further — don't just bump it to match server count 1:1, since each unit
+# here is a full BMC crawl (up to `concurrency` requests in flight), not a
+# single request, and the shared OOB network is the real limit.
+global_concurrency: 30
+# Raised from 20/4 to also reach Systems/{id}/Processors, /Memory, and
+# /Storage/{id}/Drives (health, power, fan metrics) — that subtree needs
+# depth 6 (Systems -> id -> Storage -> id -> Drives -> id) and enough
+# resource budget for every CPU/DIMM/drive/GPU on a real server, not just
+# the Chassis/Thermal sensors. This increases per-BMC crawl time/requests;
+# re-check against fleet-scale scrape load if the fleet grows much further.
+max_resources: 120
+max_depth: 6
+# Requests per BMC in flight at once during a crawl. Real embedded BMC
+# controllers are slow (100s of ms/request) but can choke under heavy
+# concurrency, so this trades wall-clock crawl time against BMC-side load
+# instead of going fully serial (too slow at 80+ resources) or unbounded.
+concurrency: 4
+# Required for the currently configured BMC, whose self-signed certificate has
+# no IP-address SAN. Replace the BMC certificate with a trusted DNS-SAN
+# certificate and set this back to false for production hardening.
+insecure_skip_verify: true

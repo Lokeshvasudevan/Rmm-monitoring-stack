@@ -1,0 +1,66 @@
+global:
+  scrape_interval: 120s
+  evaluation_interval: 120s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - "/etc/prometheus/alert_rules.yml"
+
+scrape_configs:
+  # Prometheus scraping itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Redfish exporter's own health
+  - job_name: 'redfish_exporter_self'
+    static_configs:
+      - targets: ['redfish_exporter:9610']
+
+  # The actual BMC fleet — Dell iDRAC, Lenovo XCC, HPE iLO and Supermicro BMC
+  - job_name: 'redfish'
+    metrics_path: /redfish
+    # Poll the exporter every 5 minutes. The exporter caches BMC responses for
+    # 6 minutes, so under normal conditions this interval reuses that cache
+    # rather than re-crawling every BMC every scrape. On this 85-host fleet,
+    # measured full-crawl time is 60-100s/BMC for healthy hosts, up to ~152s
+    # for the one flaky BMC (10.20.32.57, see configs/exporter.yml);
+    # scrape_timeout must clear the exporter's own internal scrape_timeout
+    # (200s) *plus* whatever this target waited behind exporter's
+    # global_concurrency cap during a fleet-wide cold-cache sweep, or
+    # Prometheus gives up before the exporter does. Raised 260s->280s after
+    # the fleet grew from 15 to 85 hosts, since a bigger fleet means a longer
+    # worst-case queue wait during a cold sweep (see global_concurrency in
+    # configs/exporter.yml). Keep this below scrape_interval (300s) so
+    # scrapes never overlap.
+    # Do not drop scrape_interval below 5m to "get fresher data" — it
+    # multiplies concurrent load on the shared BMC/OOB management network for
+    # metrics (temps, health flags) that don't change fast enough to need it.
+    scrape_interval: 5m
+    scrape_timeout: 280s
+    file_sd_configs:
+      - files:
+          - '/etc/prometheus/redfish_targets.yml'
+        refresh_interval: 5m
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      # Pass the inventory's configured GPU count through to the exporter so
+      # it can emit redfish_gpu_count_configured. GPU count can't be derived
+      # from live Redfish telemetry alone — some BMC firmware (observed on
+      # this SuperMicro fleet) only exposes a handful of zone/aggregate GPU
+      # temperature sensors rather than one per physical GPU, so counting
+      # sensor series undercounts GPUs on those hosts. The inventory value is
+      # authoritative regardless of what a given BMC's Redfish implementation
+      # chooses to expose.
+      - source_labels: [gpu_count]
+        target_label: __param_gpu_count
+      - target_label: __address__
+        replacement: redfish_exporter:9610

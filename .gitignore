@@ -1,0 +1,4 @@
+.env
+redfish-exporter
+*.test
+__pycache__/

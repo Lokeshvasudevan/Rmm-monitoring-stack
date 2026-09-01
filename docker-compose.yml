@@ -1,0 +1,84 @@
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+services:
+  redfish_exporter:
+    build:
+      context: .
+    container_name: redfish_exporter
+    restart: unless-stopped
+    volumes:
+      - ./configs/exporter.yml:/etc/redfish-exporter/config.yml:ro
+    command:
+      - "--config.file=/etc/redfish-exporter/config.yml"
+    environment:
+      - REDFISH_PASSWORD=${REDFISH_PASSWORD:?set REDFISH_PASSWORD in .env}
+    ports:
+      - "9610:9610"
+    networks:
+      - monitoring
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/redfish_targets.yml:/etc/prometheus/redfish_targets.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
+      - "--web.enable-lifecycle"
+      # Default (5m) exactly equals the redfish job's scrape_interval, so any
+      # BMC whose cache expires and needs a live re-crawl (60-150s, up to
+      # ~200s worst case) has its previous sample age out of query lookback
+      # before the new one lands — instant/stat panels (Server Count, Total
+      # GPUs, etc.) briefly lose that host every ~5 minutes even though it
+      # never actually went down. 10m comfortably covers interval + worst-case
+      # crawl time with margin; true failures still show up immediately via
+      # `up`, which alert_rules.yml already gates on 10m of real downtime.
+      - "--query.lookback-delta=10m"
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring
+    depends_on:
+      - redfish_exporter
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    networks:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/provisioning/dashboards/json:/etc/grafana/provisioning/dashboards/json:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus

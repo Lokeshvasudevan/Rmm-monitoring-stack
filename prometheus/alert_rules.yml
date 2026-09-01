@@ -1,0 +1,62 @@
+groups:
+  - name: redfish_hardware_health
+    rules:
+      - alert: RedfishTargetDown
+        expr: up{job="redfish"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BMC unreachable: {{ $labels.instance }}"
+          description: "Prometheus cannot complete a Redfish collection for 10 minutes. Check BMC power, DNS/networking, credentials, and TLS."
+
+      - alert: ServerHealthCritical
+        expr: redfish_system_health == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "System health degraded: {{ $labels.instance }}"
+          description: "The Redfish system health state is not OK."
+
+      - alert: GPUFailure
+        expr: redfish_gpu_health == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GPU health degraded: {{ $labels.instance }} / {{ $labels.name }}"
+
+      - alert: PowerSupplyFailure
+        expr: redfish_psu_health == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PSU health degraded: {{ $labels.instance }} / {{ $labels.name }}"
+
+      - alert: DiskFailure
+        expr: redfish_disk_health == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Drive health degraded: {{ $labels.instance }} / {{ $labels.name }}"
+
+      - alert: GPUTemperatureHigh
+        expr: redfish_gpu_temperature_celsius > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU over 80°C: {{ $labels.instance }} / {{ $labels.name }}"
+          description: "GPU sensor {{ $labels.name }} on {{ $labels.instance }} has been above 80°C for 5 minutes. Current: {{ $value | humanize }}°C. Vendor: {{ $labels.vendor }}, GPU type: {{ $labels.gpu }}"
+
+      - alert: HighTemperature
+        expr: redfish_temperature_celsius > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High temperature: {{ $labels.instance }} / {{ $labels.name }}"
+          description: "A Redfish sensor has remained above 80°C for five minutes."

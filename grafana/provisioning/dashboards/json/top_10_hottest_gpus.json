@@ -1,0 +1,16 @@
+{
+  "title": "Top 10 Hottest GPUs", "uid": "redfish-top-10-hottest-gpus", "schemaVersion": 39, "version": 1, "refresh": "1m",
+  "templating": {
+    "list": [
+      {"name": "site", "type": "query", "datasource": "Prometheus", "query": "label_values(redfish_gpu_temperature_celsius, site)", "includeAll": true, "multi": true, "refresh": 2},
+      {"name": "vendor", "type": "query", "datasource": "Prometheus", "query": "label_values(redfish_gpu_temperature_celsius{site=~\"$site\"}, vendor)", "includeAll": true, "multi": true, "refresh": 2}
+    ]
+  },
+  "panels": [
+    {"id": 1, "title": "Hottest GPU Now (°C)", "type": "stat", "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0}, "targets": [{"expr": "max(redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\"})", "instant": true}], "fieldConfig": {"defaults": {"unit": "celsius", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 85}]}}, "overrides": []}},
+    {"id": 4, "title": "Fleet Avg GPU Temp", "type": "stat", "gridPos": {"h": 6, "w": 8, "x": 8, "y": 0}, "targets": [{"expr": "avg(redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\"})", "instant": true}], "fieldConfig": {"defaults": {"unit": "celsius", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 85}]}}, "overrides": []}},
+    {"id": 5, "title": "GPUs Above 75°C", "type": "stat", "gridPos": {"h": 6, "w": 8, "x": 16, "y": 0}, "targets": [{"expr": "count(redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\"} > 75) or vector(0)", "instant": true}], "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []}},
+    {"id": 2, "title": "Top 10 Hottest GPUs", "type": "bargauge", "gridPos": {"h": 12, "w": 24, "x": 0, "y": 6}, "targets": [{"expr": "topk(10, redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\"})", "instant": true, "legendFormat": "{{instance}} / {{name}}"}], "options": {"orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true}, "fieldConfig": {"defaults": {"unit": "celsius", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 85}]}}, "overrides": []}},
+    {"id": 3, "title": "Top 10 Temperature Trend", "type": "timeseries", "gridPos": {"h": 12, "w": 24, "x": 0, "y": 18}, "targets": [{"expr": "topk(10, redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\"})", "legendFormat": "{{instance}} / {{name}}"}], "fieldConfig": {"defaults": {"unit": "celsius", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 85}]}}, "overrides": []}}
+  ]
+}

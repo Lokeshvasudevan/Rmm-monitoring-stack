@@ -1,0 +1,314 @@
+{
+  "title": "OEM Fleet – GPU Drill-Down",
+  "uid": "redfish-oem-fleet",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {"from": "now-1h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "vendor",
+        "label": "OEM",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(redfish_system_health, vendor)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "gpu",
+        "label": "GPU Type",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(redfish_system_health{vendor=~\"$vendor\"}, gpu)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Server Count",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "description": "Counted from up{job=\"redfish\"} (one series per configured target, filtered by vendor/gpu), not redfish_system_health: that metric is missing entirely for down targets and reports 2 series per host on HGX-baseboard hosts (the host system and the GPU baseboard), so counting it directly both undercounts down hosts and double-counts HGX hosts.",
+      "targets": [{"expr": "count(up{job=\"redfish\", vendor=~\"$vendor\", gpu=~\"$gpu\"})", "instant": true, "legendFormat": "Servers"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Total GPUs",
+      "type": "stat",
+      "description": "Summed from inventory's gpu_count (redfish_gpu_count_configured), not counted from GPU temperature sensors: sensor granularity varies by vendor (e.g. this SuperMicro fleet exposes only 3 zone-level GPU temp sensors per 8-GPU host, not one per GPU), so counting sensor series undercounts real GPUs on those hosts. Only reflects currently-reachable hosts — a host down right now drops out of this total until its next successful scrape.",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "sum(redfish_gpu_count_configured{vendor=~\"$vendor\", gpu=~\"$gpu\"}) or vector(0)", "instant": true, "legendFormat": "GPUs"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Max GPU Temp (Fleet)",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "max(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})", "instant": true, "legendFormat": "Max Temp"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "GPUs Above 80°C",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "count(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"} > 80) or vector(0)", "instant": true, "legendFormat": "Over Threshold"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Top 10 Hottest GPUs",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 4}
+    },
+    {
+      "id": 6,
+      "title": "Top 10 Hottest GPUs (°C)",
+      "type": "bargauge",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 5},
+      "targets": [
+        {
+          "expr": "topk(10, redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})",
+          "instant": true,
+          "legendFormat": "{{instance}} · {{name}} [{{vendor}}/{{gpu}}]"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]},
+          "links": [
+            {
+              "title": "Open Server Detail",
+              "url": "/d/redfish-server-detail/server-detail?var-instance=${__field.labels.instance}&var-vendor=${__field.labels.vendor}&var-gpu=${__field.labels.gpu}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "title": "Fleet GPU Temperature Summary",
+      "description": "Baseline context for the Top 10 list above: fleet-wide average and coolest reading — the more actionable question for cooling/placement than any single GPU outlier.",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 17}
+    },
+    {
+      "id": 14,
+      "title": "Fleet Avg GPU Temp",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 18},
+      "targets": [{"expr": "avg(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})", "instant": true, "legendFormat": "Avg"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 15,
+      "title": "Coolest GPU",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 18, "x": 6, "y": 18},
+      "targets": [{"expr": "min(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})", "instant": true, "legendFormat": "Min"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Temperature Trend",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22}
+    },
+    {
+      "id": 8,
+      "title": "Top 10 Hottest GPUs – Temperature Trend",
+      "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 23},
+      "targets": [
+        {
+          "expr": "topk(10, redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})",
+          "legendFormat": "{{instance}} · {{name}} [{{vendor}}]"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["last", "max"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {"lineWidth": 2, "thresholdsStyle": {"mode": "line+area"}},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]},
+          "links": [
+            {
+              "title": "Open Server Detail",
+              "url": "/d/redfish-server-detail/server-detail?var-instance=${__field.labels.instance}&var-vendor=${__field.labels.vendor}&var-gpu=${__field.labels.gpu}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "title": "GPU Health Overview",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 33}
+    },
+    {
+      "id": 10,
+      "title": "GPU Status – All Servers (by Temperature)",
+      "description": "This BMC firmware never reports GPUs as Processor/Accelerator resources, so redfish_gpu_health has no series to show — that metric is permanently empty here, not a query bug. This table shows real per-GPU status instead, derived from temperature against the same 70°C/80°C thresholds used fleet-wide.",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 34},
+      "targets": [
+        {
+          "expr": "redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"}",
+          "instant": true,
+          "format": "table",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "sortBy": [{"displayName": "Value", "desc": true}],
+        "footer": {"show": false}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "links": [
+            {
+              "title": "Open Server Detail",
+              "url": "/d/redfish-server-detail/server-detail?var-instance=${__data.fields.instance}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Value"},
+            "properties": [
+              {"id": "unit", "value": "celsius"},
+              {"id": "custom.displayMode", "value": "color-background"},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}}
+            ]
+          },
+          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]}
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "title": "Server Fleet Health",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 44}
+    },
+    {
+      "id": 12,
+      "title": "Server Health – All Servers",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 45},
+      "targets": [
+        {
+          "expr": "redfish_system_health{vendor=~\"$vendor\", gpu=~\"$gpu\"}",
+          "instant": true,
+          "format": "table",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "sortBy": [{"displayName": "Value", "desc": false}],
+        "footer": {"show": false}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "links": [
+            {
+              "title": "Open Server Detail",
+              "url": "/d/redfish-server-detail/server-detail?var-instance=${__data.fields.instance}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Value"},
+            "properties": [
+              {"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "CRITICAL", "color": "red", "index": 0}, "0.5": {"text": "WARNING", "color": "yellow", "index": 1}, "1": {"text": "OK", "color": "green", "index": 2}}}]},
+              {"id": "custom.displayMode", "value": "color-background"}
+            ]
+          },
+          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]}
+        ]
+      }
+    }
+  ]
+}

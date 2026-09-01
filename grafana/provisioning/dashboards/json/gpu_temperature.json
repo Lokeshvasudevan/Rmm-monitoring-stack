@@ -1,0 +1,7 @@
+{
+  "title": "GPU Temperature", "uid": "redfish-gpu-temperature", "schemaVersion": 39, "version": 1, "refresh": "1m",
+  "panels": [
+    {"id": 1, "title": "Hottest GPU Sensor (°C)", "type": "stat", "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0}, "targets": [{"expr": "max(redfish_gpu_temperature_celsius)", "instant": true}], "fieldConfig": {"defaults": {"unit": "celsius", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 85}]}}, "overrides": []}},
+    {"id": 2, "title": "GPU Temperatures", "type": "timeseries", "gridPos": {"h": 14, "w": 24, "x": 0, "y": 6}, "targets": [{"expr": "redfish_gpu_temperature_celsius", "legendFormat": "{{instance}} / {{name}}"}], "fieldConfig": {"defaults": {"unit": "celsius", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 85}]}}, "overrides": []}}
+  ]
+}
