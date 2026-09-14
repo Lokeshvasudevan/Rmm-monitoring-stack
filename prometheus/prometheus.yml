@@ -27,17 +27,20 @@ scrape_configs:
     metrics_path: /redfish
     # Poll the exporter every 5 minutes. The exporter caches BMC responses for
     # 6 minutes, so under normal conditions this interval reuses that cache
-    # rather than re-crawling every BMC every scrape. On this 85-host fleet,
+    # rather than re-crawling every BMC every scrape. On this 245-host fleet,
     # measured full-crawl time is 60-100s/BMC for healthy hosts, up to ~152s
     # for the one flaky BMC (10.20.32.57, see configs/exporter.yml);
     # scrape_timeout must clear the exporter's own internal scrape_timeout
     # (200s) *plus* whatever this target waited behind exporter's
     # global_concurrency cap during a fleet-wide cold-cache sweep, or
-    # Prometheus gives up before the exporter does. Raised 260s->280s after
-    # the fleet grew from 15 to 85 hosts, since a bigger fleet means a longer
-    # worst-case queue wait during a cold sweep (see global_concurrency in
-    # configs/exporter.yml). Keep this below scrape_interval (300s) so
-    # scrapes never overlap.
+    # Prometheus gives up before the exporter does. Raised 260s->280s when the
+    # fleet grew from 15 to 85 hosts. Left at 280s after the fleet grew again
+    # to 245 hosts, because global_concurrency was raised 30->85 in lockstep
+    # (configs/exporter.yml) specifically to preserve the same ~3-batch worst
+    # case that 280s was already validated against — don't assume this number
+    # is still safe if global_concurrency changes without re-checking the
+    # math there. Keep this below scrape_interval (300s) so scrapes never
+    # overlap.
     # Do not drop scrape_interval below 5m to "get fresher data" — it
     # multiplies concurrent load on the shared BMC/OOB management network for
     # metrics (temps, health flags) that don't change fast enough to need it.

@@ -1,0 +1,123 @@
+{
+  "title": "GPU Count Mismatch",
+  "uid": "redfish-gpu-count-mismatch",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "description": "Flags servers where the number of GPUs actually visible via the BMC doesn't match the configured GPU count from inventory. Uses redfish_gpu_temperature_celsius (not redfish_gpu_health) as the 'visible GPU' signal, with an explicit exception for SuperMicro: that firmware only ever exposes 3 zone-level temperature sensors per server regardless of GPU count (a documented, expected limitation, not a gap), so SuperMicro hosts are compared against 3, not against gpu_count. redfish_gpu_health was tried first and rejected - Lenovo's firmware never exposes a GPU Processor resource at all, so redfish_gpu_health is completely absent there even though temperature (via a PCIe-slot-sensor fallback) is a genuine 1:1 match with gpu_count; using health would have falsely flagged every Lenovo host as 100% missing. Known limitation: a server that has NEVER once successfully scraped has no redfish_gpu_count_configured series at all (the exporter only emits it after actually reaching the BMC), so it won't appear in this table - those are already covered by the RedfishTargetDown alert and the up{job=\"redfish\"} panels elsewhere.",
+  "templating": {
+    "list": [
+      {"name": "site", "type": "query", "datasource": "Prometheus", "query": "label_values(redfish_gpu_count_configured, site)", "includeAll": true, "multi": true, "refresh": 2},
+      {"name": "vendor", "type": "query", "datasource": "Prometheus", "query": "label_values(redfish_gpu_count_configured{site=~\"$site\"}, vendor)", "includeAll": true, "multi": true, "refresh": 2}
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Servers With Mismatch",
+      "type": "stat",
+      "description": "Count of servers where visible GPUs (redfish_gpu_temperature_celsius, or 3 for SuperMicro) != configured GPUs (inventory gpu_count).",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "count(\n  (\n    (redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor!=\"SuperMicro\"} - on(instance) group_left() (count by (instance) (redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\", vendor!=\"SuperMicro\"}) or on(instance) (0 * redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor!=\"SuperMicro\"}))) != 0\n  )\n  or\n  (\n    ((0*redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor=\"SuperMicro\"}+3) - on(instance) group_left() (count by (instance) (redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\", vendor=\"SuperMicro\"}) or on(instance) (0 * redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor=\"SuperMicro\"}))) > 0\n  )\n) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Total GPUs Missing",
+      "type": "stat",
+      "description": "Sum of (expected - visible) across servers with a mismatch. Expected = gpu_count for all vendors except SuperMicro, which is compared against 3 (its documented zone-sensor ceiling) instead.",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(\n  clamp_min(\n    (redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor!=\"SuperMicro\"} - on(instance) group_left() (count by (instance) (redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\", vendor!=\"SuperMicro\"}) or on(instance) (0 * redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor!=\"SuperMicro\"})))\n  , 0)\n)\n+\nsum(\n  clamp_min(\n    ((0*redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor=\"SuperMicro\"}+3) - on(instance) group_left() (count by (instance) (redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\", vendor=\"SuperMicro\"}) or on(instance) (0 * redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor=\"SuperMicro\"})))\n  , 0)\n)\nor vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 8}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Total Configured GPUs",
+      "type": "stat",
+      "description": "sum(redfish_gpu_count_configured) for the current site/vendor filter - the expected fleet total to compare against.",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\"}) or vector(0)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short"},
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Servers With GPU Count Mismatch",
+      "description": "Value column = expected GPUs minus visible GPUs (expected is gpu_count, except for SuperMicro which is compared against 3 - its documented zone-sensor ceiling, not a per-GPU count). Positive = fewer GPUs visible than expected (missing coverage - auth/crawl/firmware issue). Negative = more visible than expected (inventory.csv gpu_count is likely wrong for that host). Click a row to open Server Detail.",
+      "type": "table",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 6},
+      "targets": [
+        {
+          "expr": "(\n  (redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor!=\"SuperMicro\"} - on(instance) group_left() (count by (instance) (redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\", vendor!=\"SuperMicro\"}) or on(instance) (0 * redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor!=\"SuperMicro\"}))) != 0\n)\nor\n(\n  ((0*redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor=\"SuperMicro\"}+3) - on(instance) group_left() (count by (instance) (redfish_gpu_temperature_celsius{site=~\"$site\", vendor=~\"$vendor\", vendor=\"SuperMicro\"}) or on(instance) (0 * redfish_gpu_count_configured{site=~\"$site\", vendor=~\"$vendor\", vendor=\"SuperMicro\"}))) > 0\n)",
+          "instant": true,
+          "format": "table",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "sortBy": [{"displayName": "Value", "desc": true}],
+        "footer": {"show": false}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "links": [
+            {
+              "title": "Open Server Detail",
+              "url": "/d/redfish-server-detail/server-detail?var-instance=${__data.fields.instance}&var-vendor=${__data.fields.vendor}&var-gpu=${__data.fields.gpu}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Value"},
+            "properties": [
+              {"id": "displayName", "value": "GPUs Missing"},
+              {"id": "unit", "value": "short"},
+              {"id": "custom.displayMode", "value": "color-background"},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"color": "blue", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "red", "value": 3}
+              ]}}
+            ]
+          },
+          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "exported_vendor"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "gpu_count"}, "properties": [{"id": "displayName", "value": "Configured"}]}
+        ]
+      }
+    }
+  ]
+}

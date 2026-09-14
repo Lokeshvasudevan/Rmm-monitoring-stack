@@ -2,7 +2,7 @@
   "title": "OEM Fleet – GPU Drill-Down",
   "uid": "redfish-oem-fleet",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "5m",
   "time": {"from": "now-1h", "to": "now"},
   "templating": {
@@ -38,7 +38,7 @@
       "id": 1,
       "title": "Server Count",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
       "description": "Counted from up{job=\"redfish\"} (one series per configured target, filtered by vendor/gpu), not redfish_system_health: that metric is missing entirely for down targets and reports 2 series per host on HGX-baseboard hosts (the host system and the GPU baseboard), so counting it directly both undercounts down hosts and double-counts HGX hosts.",
       "targets": [{"expr": "count(up{job=\"redfish\", vendor=~\"$vendor\", gpu=~\"$gpu\"})", "instant": true, "legendFormat": "Servers"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
@@ -51,11 +51,27 @@
       }
     },
     {
+      "id": 19,
+      "title": "Hosts Down",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "description": "count(up{job=\"redfish\"} == 0) — pairs with Server Count and explains any gap in Total GPUs below (a down host's redfish_gpu_count_configured drops out entirely until its next successful scrape, see that panel's description). Backs the RedfishTargetDown alert (fires per-host after 10m down); this is the live, un-debounced count.",
+      "targets": [{"expr": "count(up{job=\"redfish\", vendor=~\"$vendor\", gpu=~\"$gpu\"} == 0) or vector(0)", "instant": true, "legendFormat": "Down"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
       "id": 2,
       "title": "Total GPUs",
       "type": "stat",
-      "description": "Summed from inventory's gpu_count (redfish_gpu_count_configured), not counted from GPU temperature sensors: sensor granularity varies by vendor (e.g. this SuperMicro fleet exposes only 3 zone-level GPU temp sensors per 8-GPU host, not one per GPU), so counting sensor series undercounts real GPUs on those hosts. Only reflects currently-reachable hosts — a host down right now drops out of this total until its next successful scrape.",
-      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "description": "Summed from inventory's gpu_count (redfish_gpu_count_configured), not counted from GPU temperature sensors: sensor granularity varies by vendor (e.g. this SuperMicro fleet exposes only 3 zone-level GPU temp sensors per 8-GPU host, not one per GPU), so counting sensor series undercounts real GPUs on those hosts. Only reflects currently-reachable hosts — see Hosts Down for what's currently excluded from this total.",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
       "targets": [{"expr": "sum(redfish_gpu_count_configured{vendor=~\"$vendor\", gpu=~\"$gpu\"}) or vector(0)", "instant": true, "legendFormat": "GPUs"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
       "fieldConfig": {
@@ -67,25 +83,10 @@
       }
     },
     {
-      "id": 3,
-      "title": "Max GPU Temp (Fleet)",
-      "type": "stat",
-      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
-      "targets": [{"expr": "max(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})", "instant": true, "legendFormat": "Max Temp"}],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
-      "fieldConfig": {
-        "defaults": {
-          "unit": "celsius",
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}
-        },
-        "overrides": []
-      }
-    },
-    {
       "id": 4,
       "title": "GPUs Above 80°C",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
       "targets": [{"expr": "count(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"} > 80) or vector(0)", "instant": true, "legendFormat": "Over Threshold"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
       "fieldConfig": {
@@ -97,17 +98,134 @@
       }
     },
     {
-      "id": 5,
-      "title": "Top 10 Hottest GPUs",
+      "id": 20,
+      "title": "GPUs Hot While Idle",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "description": "Live count of the GPUHotWhileIdle condition (>45°C while the host trails its peer cohort's power draw — see prometheus/alert_rules.yml). This is the instantaneous count, not gated by the alert's 15m 'for' duration, so it can be non-zero here briefly before (or without) actually paging — check the GPU Hot While Idle section below for detail.",
+      "targets": [{"expr": "count((redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"} > 45) and on (instance) (redfish_power_watts{name=~\"System Power Control|Server Power Control\"} < on (vendor, gpu_count) group_left quantile(0.15, redfish_power_watts{name=~\"System Power Control|Server Power Control\"}) by (vendor, gpu_count))) or vector(0)", "instant": true, "legendFormat": "Idle+Hot"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 21,
+      "title": "Active Critical Alerts",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "description": "count(ALERTS{alertstate=\"firing\", severity=\"critical\"}) — ServerHealthCritical, GPUFailure, PowerSupplyFailure, DiskFailure. Unlike the other tiles in this row (which read the raw metric right now), this only counts alerts that have already cleared their 'for' duration in prometheus/alert_rules.yml, i.e. confirmed, sustained problems Alertmanager has actually paged on.",
+      "targets": [{"expr": "count(ALERTS{alertstate=\"firing\", severity=\"critical\", vendor=~\"$vendor\", gpu=~\"$gpu\"}) or vector(0)", "instant": true, "legendFormat": "Critical"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 16,
+      "title": "GPU Hot While Idle",
       "type": "row",
       "collapsed": false,
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 4}
     },
     {
+      "id": 18,
+      "title": "GPUs Hot Without Matching Load (°C)",
+      "description": "Same condition as the GPUHotWhileIdle alert, same style as the Top 10 Hottest GPUs bar below: GPU sensor above 45°C while the host's total power draw trails well behind its same-vendor/GPU-count peers right now (bottom 15th percentile of the live cohort — see prometheus/alert_rules.yml for why this is peer-relative rather than a fleet-wide watt cutoff or each host's own history). Placed ahead of Top 10 Hottest because a hot-but-idle GPU is a stronger signal of a real problem (stuck process, stuck P-state, tray cooling fault) than a hot GPU that's simply under real load.",
+      "type": "bargauge",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 5},
+      "targets": [
+        {
+          "expr": "topk(10, (redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"} > 45) and on (instance) (redfish_power_watts{name=~\"System Power Control|Server Power Control\"} < on (vendor, gpu_count) group_left quantile(0.15, redfish_power_watts{name=~\"System Power Control|Server Power Control\"}) by (vendor, gpu_count)))",
+          "instant": true,
+          "legendFormat": "{{instance}} · {{name}} [{{vendor}}/{{gpu}}]"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 45}, {"color": "red", "value": 55}]},
+          "links": [
+            {
+              "title": "Open Server Detail",
+              "url": "/d/redfish-server-detail/server-detail?var-instance=${__field.labels.instance}&var-vendor=${__field.labels.vendor}&var-gpu=${__field.labels.gpu}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 17,
+      "title": "GPUs Hot Without Matching Load",
+      "description": "Same condition as the GPUHotWhileIdle alert: GPU sensor above 45°C while the host's total power draw trails well behind its same-vendor/GPU-count peers right now (bottom 15th percentile of the live cohort — see prometheus/alert_rules.yml for why this is peer-relative rather than a fleet-wide watt cutoff or each host's own history). redfish_power_watts is chassis-total, not per-GPU, so on multi-sensor hosts (Dell/HGX) compare the flagged sensor against its siblings in this table to see if it's an isolated GPU or the whole zone — that distinction matters for triage (single stuck process vs. a tray-level cooling fault). Confirmed twice already (10.20.32.147, 10.20.32.137) to catch real issues, not idle-baseline noise.",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 13},
+      "targets": [
+        {
+          "expr": "(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"} > 45) and on (instance) (redfish_power_watts{name=~\"System Power Control|Server Power Control\"} < on (vendor, gpu_count) group_left quantile(0.15, redfish_power_watts{name=~\"System Power Control|Server Power Control\"}) by (vendor, gpu_count))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "sortBy": [{"displayName": "Value", "desc": true}],
+        "footer": {"show": false}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "links": [
+            {
+              "title": "Open Server Detail",
+              "url": "/d/redfish-server-detail/server-detail?var-instance=${__data.fields.instance}&var-vendor=${__data.fields.vendor}&var-gpu=${__data.fields.gpu}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Value"},
+            "properties": [
+              {"id": "unit", "value": "celsius"},
+              {"id": "custom.displayMode", "value": "color-background"},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 45}, {"color": "red", "value": 55}]}}
+            ]
+          },
+          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "exported_vendor"}, "properties": [{"id": "custom.hidden", "value": true}]}
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "title": "Top 10 Hottest GPUs",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 21}
+    },
+    {
       "id": 6,
       "title": "Top 10 Hottest GPUs (°C)",
       "type": "bargauge",
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 5},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 22},
       "targets": [
         {
           "expr": "topk(10, redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})",
@@ -139,16 +257,31 @@
     {
       "id": 13,
       "title": "Fleet GPU Temperature Summary",
-      "description": "Baseline context for the Top 10 list above: fleet-wide average and coolest reading — the more actionable question for cooling/placement than any single GPU outlier.",
+      "description": "Min / average / max across the fleet — the baseline context for the two anomaly lists above, and the more actionable question for cooling/placement than any single GPU outlier.",
       "type": "row",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 17}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 34}
+    },
+    {
+      "id": 3,
+      "title": "Max GPU Temp (Fleet)",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 35},
+      "targets": [{"expr": "max(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})", "instant": true, "legendFormat": "Max Temp"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}
+        },
+        "overrides": []
+      }
     },
     {
       "id": 14,
       "title": "Fleet Avg GPU Temp",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 18},
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 35},
       "targets": [{"expr": "avg(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})", "instant": true, "legendFormat": "Avg"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
       "fieldConfig": {
@@ -163,7 +296,7 @@
       "id": 15,
       "title": "Coolest GPU",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 18, "x": 6, "y": 18},
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 35},
       "targets": [{"expr": "min(redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})", "instant": true, "legendFormat": "Min"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
       "fieldConfig": {
@@ -179,13 +312,13 @@
       "title": "Temperature Trend",
       "type": "row",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39}
     },
     {
       "id": 8,
       "title": "Top 10 Hottest GPUs – Temperature Trend",
       "type": "timeseries",
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 23},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 40},
       "targets": [
         {
           "expr": "topk(10, redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"})",
@@ -217,14 +350,14 @@
       "title": "GPU Health Overview",
       "type": "row",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 33}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 50}
     },
     {
       "id": 10,
       "title": "GPU Status – All Servers (by Temperature)",
       "description": "This BMC firmware never reports GPUs as Processor/Accelerator resources, so redfish_gpu_health has no series to show — that metric is permanently empty here, not a query bug. This table shows real per-GPU status instead, derived from temperature against the same 70°C/80°C thresholds used fleet-wide.",
       "type": "table",
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 34},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 51},
       "targets": [
         {
           "expr": "redfish_gpu_temperature_celsius{vendor=~\"$vendor\", gpu=~\"$gpu\"}",
@@ -258,7 +391,8 @@
           },
           {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
           {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
-          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]}
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "exported_vendor"}, "properties": [{"id": "custom.hidden", "value": true}]}
         ]
       }
     },
@@ -267,13 +401,13 @@
       "title": "Server Fleet Health",
       "type": "row",
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 44}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 61}
     },
     {
       "id": 12,
       "title": "Server Health – All Servers",
       "type": "table",
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 45},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 62},
       "targets": [
         {
           "expr": "redfish_system_health{vendor=~\"$vendor\", gpu=~\"$gpu\"}",
@@ -306,7 +440,8 @@
           },
           {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
           {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
-          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]}
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "exported_vendor"}, "properties": [{"id": "custom.hidden", "value": true}]}
         ]
       }
     }

@@ -63,7 +63,32 @@ func(c *Collector) collect(ctx context.Context,target string)(model.Snapshot,err
 	// earlier resources in the same crawl succeeded.
 	conc:=c.cfg.Concurrency
 	if cred.Concurrency>0{conc=cred.Concurrency}
-	docs,e:=crawl(ctx,target,cl,c.cfg.MaxResources,c.cfg.MaxDepth,conc);if e!=nil{return model.Snapshot{},e};s:=normalize(docs);c.cache.Put(target,s);return s,nil}
+	// Per-host override for BMCs whose resource graph is far larger than the
+	// fleet default budget covers — NVIDIA HGX baseboard controllers expose
+	// 40 Chassis members alone (per-GPU ERoT security co-processor, NVSwitch,
+	// PCIeRetimer, PCIeSwitch, plus the real per-GPU chassis), several times
+	// the resource count of a typical Dell/Lenovo/SuperMicro host. The BFS
+	// crawl below visits links in alphabetical order, and "HGX_ERoT_GPU_SXM_*"
+	// sorts before "HGX_GPU_SXM_*" — so the fleet-default max_resources
+	// silently exhausts on ERoT/NVSwitch/PCIeRetimer chassis before ever
+	// reaching the real GPU chassis' Sensors/ThermalSubsystem resources,
+	// with no error logged (it's a budget cutoff, not a fetch failure) and
+	// redfish_gpu_health/info still present (Processors are reached via
+	// Systems, a separate, smaller subtree) while
+	// redfish_gpu_temperature_celsius silently never appears.
+	max:=c.cfg.MaxResources
+	if cred.MaxResources>0{max=cred.MaxResources}
+	// Per-host override for BMCs whose deep subtrees (e.g. individual CPU
+	// cores under Systems/{id}/Processors/{cpu}/SubProcessors/{core}, one
+	// resource per physical core) inflate the crawl far beyond what raising
+	// max_resources alone can afford within scrape_timeout. GPU sensor
+	// readings sit shallower (Chassis/{id}/Sensors/{reading}, depth 4) than
+	// per-core CPU detail (depth 6) — capping depth for these hosts trades
+	// that per-core/per-drive granularity away in exchange for actually
+	// reaching GPU thermal data within budget.
+	depth:=c.cfg.MaxDepth
+	if cred.MaxDepth>0{depth=cred.MaxDepth}
+	docs,e:=crawl(ctx,target,cl,max,depth,conc);if e!=nil{return model.Snapshot{},e};s:=normalize(docs);c.cache.Put(target,s);return s,nil}
 func crawl(ctx context.Context,target string,c *redfish.Client,max,depth,concurrency int)([]map[string]any,error){
 	// Resolve the service root explicitly. Returning this error is important:
 	// a generic "no resources" response conceals certificate, credential, and

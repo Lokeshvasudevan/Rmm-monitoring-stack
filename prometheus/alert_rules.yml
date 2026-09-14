@@ -52,6 +52,53 @@ groups:
           summary: "GPU over 80°C: {{ $labels.instance }} / {{ $labels.name }}"
           description: "GPU sensor {{ $labels.name }} on {{ $labels.instance }} has been above 80°C for 5 minutes. Current: {{ $value | humanize }}°C. Vendor: {{ $labels.vendor }}, GPU type: {{ $labels.gpu }}"
 
+      - alert: GPUHotWhileIdle
+        # "Idle" is defined relative to the host's live peer cohort (same
+        # vendor + gpu_count), not its own time history or a fleet-wide
+        # wattage cutoff. Tried a time-based version first
+        # (quantile_over_time against each host's own 24h power) but on
+        # this fleet a given host's power barely varies over 24h (stays
+        # within ~10-15% of itself), so "near my own floor" was true
+        # almost always regardless of real load — it flagged
+        # 10.20.32.225 as idle while it was sitting at its actual 24h
+        # peak (9312W). What genuinely varies is power *across* same
+        # vendor/gpu_count peers at a point in time (e.g. live spread
+        # observed: SuperMicro/8-GPU 2019-9312W, Dell/8-GPU 2152-5981W,
+        # Lenovo/4-GPU 841-2312W) — so a host trailing well behind its own
+        # peers right now is a much stronger idle signal here.
+        # redfish_power_watts is chassis-total, not per-GPU (no per-GPU
+        # power breakout exists on this fleet — Dell/SuperMicro only
+        # report "System/Server Power Control", Lenovo additionally
+        # splits out "CPU Sub-system Power"), so this can only flag "this
+        # host looks idle", not which specific GPU on a multi-GPU host is
+        # the stuck one — use the temperature label (per-GPU/zone sensor)
+        # for that. 45C sits inside this fleet's observed idle range
+        # (currently-idle hosts span 31-50C across vendors — SuperMicro
+        # idles as high as 50C, Lenovo as low as 33C — so a flat 45C alone
+        # will occasionally catch a normally-warm idle host, not just
+        # stuck ones). Deliberately not raising the threshold to dodge
+        # that: the 15m "for" duration is the noise filter here, same
+        # pattern as GPUTemperatureHigh below, so a momentary warm reading
+        # on a normally-toasty idle host clears before it fires. If it
+        # still proves noisy per-vendor in practice, revisit with a
+        # per-vendor threshold instead of a global one. 15th percentile is
+        # a starting point for "well below peers", not a validated cutoff
+        # — revisit once this has run against real idle/load cycles
+        # instead of this snapshot.
+        expr: |
+          (redfish_gpu_temperature_celsius > 45)
+          and on (instance) (
+            redfish_power_watts{name=~"System Power Control|Server Power Control"}
+            < on (vendor, gpu_count) group_left
+              quantile(0.15, redfish_power_watts{name=~"System Power Control|Server Power Control"}) by (vendor, gpu_count)
+          )
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU hot while host idle: {{ $labels.instance }} / {{ $labels.name }}"
+          description: "GPU sensor {{ $labels.name }} on {{ $labels.instance }} ({{ $labels.vendor }}/{{ $labels.gpu }}) has been above 45°C for 15 minutes while the host's power draw trails well behind its same-vendor/GPU-count peers. Current: {{ $value | humanize }}°C. Compute load doesn't look high enough to explain this — check for a stuck/zombie process still holding the GPU, a GPU stuck in a high power state, or a tray-level cooling fault."
+
       - alert: HighTemperature
         expr: redfish_temperature_celsius > 85
         for: 5m

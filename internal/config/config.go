@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type Credential struct { Username string `yaml:"username"`; Password string `yaml:"password"`; PasswordEnv string `yaml:"password_env"`; Concurrency int `yaml:"concurrency"` }
+type Credential struct { Username string `yaml:"username"`; Password string `yaml:"password"`; PasswordEnv string `yaml:"password_env"`; Concurrency int `yaml:"concurrency"`; MaxResources int `yaml:"max_resources"`; MaxDepth int `yaml:"max_depth"` }
 type Raw struct { Hosts map[string]Credential `yaml:"hosts"`; Timeout string `yaml:"timeout"`; ScrapeTimeout string `yaml:"scrape_timeout"`; Retries int `yaml:"retries"`; InsecureSkipVerify bool `yaml:"insecure_skip_verify"`; CacheTTL string `yaml:"cache_ttl"`; MaxResources int `yaml:"max_resources"`; MaxDepth int `yaml:"max_depth"`; Concurrency int `yaml:"concurrency"`; GlobalConcurrency int `yaml:"global_concurrency"` }
 type Config struct { Hosts map[string]Credential; Timeout, ScrapeTimeout, CacheTTL time.Duration; Retries, MaxResources, MaxDepth, Concurrency, GlobalConcurrency int; InsecureSkipVerify bool }
 

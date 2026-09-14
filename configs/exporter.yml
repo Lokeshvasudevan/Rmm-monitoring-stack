@@ -4,21 +4,64 @@ hosts:
     username: monitoring
     password_env: REDFISH_PASSWORD
 
-  # These 5 AMI MegaRAC-based GPU tray BMCs (HPE chassis, "HPE" vendor label
-  # in inventory) return Security.1.0.AccessDenied partway through a crawl at
-  # the default concurrency of 4 — an anti-hammering lockout, not a
-  # credentials problem (Processors/health resources fetched early in the
-  # crawl succeed; Chassis/Thermal fetched later in the same crawl get
-  # denied, so redfish_gpu_health/info come through but
-  # redfish_gpu_temperature_celsius never does). Dropped per-host concurrency
-  # to 1 so this exporter never has more than one Basic-Auth request open
-  # against these controllers at a time. No credentials needed here — they
-  # inherit hosts.default.
-  "10.20.32.114": { concurrency: 1 }
-  "10.20.32.122": { concurrency: 1 }
-  "10.20.32.123": { concurrency: 1 }
-  "10.20.32.124": { concurrency: 1 }
-  "10.20.32.125": { concurrency: 1 }
+  # These 6 AMI MegaRAC-based GPU tray BMCs (HPE chassis, "HPE" vendor label
+  # in inventory) used to return Security.1.0.AccessDenied partway through a
+  # crawl at the default concurrency of 4 (Processors/health resources
+  # fetched early in the crawl succeeded; Chassis/Thermal fetched later in
+  # the same crawl got denied, so redfish_gpu_health/info came through but
+  # redfish_gpu_temperature_celsius never did). This was traced to each
+  # BMC's own AccountService.AccountLockoutThreshold (5 failed logins/30s
+  # window) — HTTP Basic Auth re-authenticates on every single request, so a
+  # ~100+ resource crawl looked like a brute-force attempt to the BMC even
+  # with fully correct credentials. Fixed 2026-09-14 by setting
+  # AccountLockoutThreshold: 0 (disabled) on all 6 via each BMC's
+  # AccountService — confirmed via each BMC's own AuditLog showing zero new
+  # Security.1.0.LoginFailure/AccessDenied entries since. Restored
+  # concurrency to the fleet default (4) now that lockout is no longer a
+  # risk — do not drop these back to 1 to "be safe": that was purely a lockout
+  # workaround, not something these controllers otherwise need, and going
+  # back to 1 just makes an already-slow embedded controller's crawl take
+  # even longer against scrape_timeout for no remaining benefit.
+  #
+  # With lockout gone, GPU temperature was STILL missing on these 6 - a
+  # second, separate problem: these NVIDIA HGX baseboard controllers expose
+  # 40 Chassis members alone (per-GPU ERoT security co-processor, NVSwitch,
+  # PCIeRetimer, PCIeSwitch, plus the 8 real GPU chassis), several times the
+  # resource count of a typical Dell/Lenovo/SuperMicro host. The crawl visits
+  # links in alphabetical order, and "HGX_ERoT_GPU_SXM_*" sorts before
+  # "HGX_GPU_SXM_*" - so the fleet-default max_resources (120) was silently
+  # exhausted on ERoT/NVSwitch/PCIeRetimer chassis before the crawl ever
+  # reached the real GPU chassis' Sensors/ThermalSubsystem resources. No
+  # error was logged for this (it's a budget cutoff, not a fetch failure),
+  # and redfish_gpu_health/info still came through fine (Processors are
+  # reached via the separate, much smaller Systems subtree) - only
+  # redfish_gpu_temperature_celsius silently never appeared. Confirmed via
+  # direct requests with the monitoring account: it can read
+  # /Chassis/HGX_GPU_SXM_1/Sensors (7 real sensors incl. 2 temperature
+  # readings) with no permission error, so this was never an access problem.
+  # Raised max_resources per-host for these 6 well above the fleet default to
+  # give the crawl enough budget to reach every GPU chassis's Sensors
+  # subtree even after the ERoT/NVSwitch/PCIeRetimer chassis ahead of it in
+  # crawl order are visited too.
+  #
+  # Raising max_resources alone was not enough: these hosts also expose
+  # Systems/Self/Processors/{cpu}/SubProcessors/{core} - one resource per
+  # physical CPU core (dozens per socket) - which inflates the crawl well
+  # beyond what fits in scrape_timeout even at 600 resources. GPU sensor
+  # readings sit at depth 4 (Chassis/{id}/Sensors/{reading}), shallower than
+  # per-core CPU detail at depth 6, so capping max_depth at 4 excludes the
+  # expensive per-core/per-drive drill-down for these 6 hosts specifically
+  # while still reaching GPU thermal data. Trade-off: these 6 hosts lose
+  # per-core CPU and per-drive granularity that the rest of the fleet keeps
+  # (max_depth 6) - acceptable here since the priority is GPU temperature,
+  # and redfish_cpu_health/redfish_system_health (from shallower resources)
+  # are unaffected.
+  "10.20.32.75": { max_resources: 600, max_depth: 4 }
+  "10.20.32.114": { max_resources: 600, max_depth: 4 }
+  "10.20.32.122": { max_resources: 600, max_depth: 4 }
+  "10.20.32.123": { max_resources: 600, max_depth: 4 }
+  "10.20.32.124": { max_resources: 600, max_depth: 4 }
+  "10.20.32.125": { max_resources: 600, max_depth: 4 }
 
 # Per-BMC overrides are optional.
 # "10.10.7.10":
@@ -51,18 +94,19 @@ cache_ttl: 6m
 # restarts, or a simultaneous cache_ttl expiry across many hosts — lets every
 # target's crawl fire at the same moment and floods the shared BMC/OOB
 # management network instead of just one controller.
-# Raised 12->30 after the fleet grew from 15 to 85 hosts. At the old cap of
-# 12, a full cold-cache sweep queues in batches of 12 at ~60-100s/batch —
-# 85/12 ≈ 7 batches, ~500-700s worst case — which blows well past both
-# cache_ttl (6m) and the Prometheus job's scrape_timeout (see
-# prometheus/prometheus.yml), so most of the fleet would fail its first
-# scrape after every restart. At 30, worst-case queue depth drops to
-# 85/30 ≈ 3 batches (~180-300s), which fits inside cache_ttl so the fleet
-# fully warms within one cycle. Re-check this math if the fleet grows
-# further — don't just bump it to match server count 1:1, since each unit
-# here is a full BMC crawl (up to `concurrency` requests in flight), not a
-# single request, and the shared OOB network is the real limit.
-global_concurrency: 30
+# Raised 12->30 after the fleet grew from 15 to 85 hosts, then 30->85 after
+# it grew again from 85 to 245 hosts (160 H200s added). At 85/12, cold sweep
+# was 85/12 ≈ 7 batches, ~500-700s worst case — blew past both cache_ttl (6m)
+# and the Prometheus job's scrape_timeout, so most of the fleet failed its
+# first scrape after every restart. At 245/85, worst-case queue depth is
+# 245/85 ≈ 3 batches (~180-300s) — the same batch depth and timing envelope
+# that was already validated at 85/30, so this deliberately preserves that
+# math instead of scaling 1:1 with server count (245/30 would be ~9 batches,
+# ~600-900s, well past cache_ttl again). Re-check this math if the fleet
+# grows further — each unit here is a full BMC crawl (up to `concurrency`
+# requests in flight), not a single request, and the shared OOB network is
+# the real limit, not just a number to scale linearly.
+global_concurrency: 85
 # Raised from 20/4 to also reach Systems/{id}/Processors, /Memory, and
 # /Storage/{id}/Drives (health, power, fan metrics) — that subtree needs
 # depth 6 (Systems -> id -> Storage -> id -> Drives -> id) and enough

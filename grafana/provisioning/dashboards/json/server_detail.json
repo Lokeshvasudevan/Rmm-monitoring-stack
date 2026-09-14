@@ -79,9 +79,9 @@
       "id": 3,
       "title": "GPU Count",
       "type": "stat",
-      "description": "Counted from GPU temperature sensors, not redfish_gpu_health: this BMC firmware does not expose GPUs as Redfish Processor/Accelerator resources.",
+      "description": "From inventory's gpu_count (redfish_gpu_count_configured), not counted from GPU temperature sensors: sensor granularity varies by vendor firmware (SuperMicro exposes only 3 zone-level sensors per 8-GPU host; the 6 HPE/HGX-baseboard hosts currently expose 0 due to an intermittent auth issue under fleet-wide scrape load, see project notes) — counting sensor series would undercount or, on HPE, wrongly show 0 GPUs on a fully populated 8-GPU host. See 'GPU Temperature (°C)' below for how many of those configured GPUs currently have a live reading.",
       "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
-      "targets": [{"expr": "count(redfish_gpu_temperature_celsius{instance=\"$instance\"}) or vector(0)", "instant": true, "legendFormat": "GPUs"}],
+      "targets": [{"expr": "sum(redfish_gpu_count_configured{instance=\"$instance\"}) or vector(0)", "instant": true, "legendFormat": "GPUs"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
       "fieldConfig": {
         "defaults": {
@@ -95,8 +95,9 @@
       "id": 4,
       "title": "Total Node Power",
       "type": "stat",
+      "description": "Summed only from the whole-chassis reading (name=~\"System Power Control|Server Power Control\"), not every redfish_power_watts series: on Lenovo hosts, PowerControl also reports \"CPU Sub-system Power\" as its own series — a sub-component already counted inside the chassis total, not a separate additive rail. Summing everything indiscriminately previously inflated Lenovo hosts' reported power by ~15-25%. Same filter used in the GPUHotWhileIdle alert (prometheus/alert_rules.yml) for the same reason. See the Node Power (W) chart below to see the sub-component breakdown.",
       "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
-      "targets": [{"expr": "sum(redfish_power_watts{instance=\"$instance\"}) or vector(0)", "instant": true, "legendFormat": "Watts"}],
+      "targets": [{"expr": "sum(redfish_power_watts{instance=\"$instance\", name=~\"System Power Control|Server Power Control\"}) or vector(0)", "instant": true, "legendFormat": "Watts"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
       "fieldConfig": {
         "defaults": {
@@ -146,9 +147,10 @@
     {
       "id": 8,
       "title": "GPU Temperature (°C)",
+      "description": "On SuperMicro hosts this legitimately shows only 3 lines (GPU Temp, GPU Inlet Temp, GPU HSC Temp) even when GPU Count above reads 8: this BMC firmware exposes those as zone/tray-level sensors shared across all installed GPUs, not one reading per physical GPU — confirmed against live scrapes on multiple SuperMicro hosts, values differ host-to-host so it's real sensor data, not a stuck query. Each GPU is still individually enumerated for health/inventory (see GPU_SXM_1..8 in redfish_gpu_health/redfish_gpu_info) — temperature is just lower-granularity than that on this firmware. Per-GPU (GPU0-GPU7) temperature isn't available out-of-band via Redfish here; use in-band tooling (nvidia-smi/DCGM) on the host if that granularity is needed.",
       "type": "timeseries",
       "gridPos": {"h": 10, "w": 24, "x": 0, "y": 5},
-      "targets": [{"expr": "redfish_gpu_temperature_celsius{instance=\"$instance\"}", "legendFormat": "GPU {{name}}"}],
+      "targets": [{"expr": "redfish_gpu_temperature_celsius{instance=\"$instance\"}", "legendFormat": "{{name}}"}],
       "options": {
         "tooltip": {"mode": "multi"},
         "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["last", "max"]}
@@ -187,7 +189,11 @@
               {"id": "custom.displayMode", "value": "color-background"},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 80}]}}
             ]
-          }
+          },
+          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "exported_vendor"}, "properties": [{"id": "custom.hidden", "value": true}]}
         ]
       }
     },
@@ -237,7 +243,11 @@
               {"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "FAILED", "color": "red", "index": 0}, "1": {"text": "OK", "color": "green", "index": 1}}}]},
               {"id": "custom.displayMode", "value": "color-background"}
             ]
-          }
+          },
+          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "exported_vendor"}, "properties": [{"id": "custom.hidden", "value": true}]}
         ]
       }
     },
@@ -332,7 +342,8 @@
           {"matcher": {"id": "byName", "options": "Value"}, "properties": [{"id": "custom.hidden", "value": true}]},
           {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.hidden", "value": true}]},
           {"matcher": {"id": "byName", "options": "__name__"}, "properties": [{"id": "custom.hidden", "value": true}]},
-          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]}
+          {"matcher": {"id": "byName", "options": "job"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "exported_vendor"}, "properties": [{"id": "custom.hidden", "value": true}]}
         ]
       }
     }

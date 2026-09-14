@@ -8,18 +8,21 @@ Management Controller) over the management network using the Redfish API.
 
 ## How It Works (Architecture)
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                       Your Fleet (85 servers)                    │
-│                                                                  │
-│  Dell iDRAC   Lenovo XCC   Supermicro BMC   HPE iLO   Tyrone BMC │
-│  (H200/H100)   (H100)       (H200/H100)     (H100)      (B200)  │
-│      │            │              │             │           │    │
-└──────┼────────────┼──────────────┼─────────────┼───────────┼───┘
-       │            │              │             │           │
-       │       Management Network (out-of-band VLAN)          │
-       └────────────┴───────┬──────┴─────────────┴───────────┘
-                            │  HTTPS/443
-                            ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                       Your Fleet (245 servers)                    │
+│                                                                    │
+│  Dell iDRAC (183)   Lenovo XCC (15)   SuperMicro BMC (41)         │
+│  H100/H200            H100               H100                     │
+│      │                   │                  │                    │
+│              NVIDIA HGX/AMI baseboard BMC (6, labeled             │
+│              "HPE" in inventory — real chassis iLO not used)      │
+│              H100, full per-GPU sensors (GPU0_PROC..GPU7_PROC)    │
+│                          │                                        │
+└──────────────────────────┼────────────────────────────────────────┘
+                           │
+                    Management Network (out-of-band VLAN)
+                           │  HTTPS/443
+                           ▼
           ┌────────────────────────────────────┐
           │         Redfish Exporter           │
           │         (Go, port 9610)            │
@@ -53,10 +56,10 @@ Management Controller) over the management network using the Redfish API.
 | Decision | Reason |
 |---|---|
 | Pull from BMC, not push from server | Works even when the OS is down, hung, or being reimaged |
-| Standard Redfish API only | Works across Dell, Supermicro, HPE, Tyrone without vendor-specific code |
+| Standard Redfish API only | Works across Dell, Supermicro, HPE, Lenovo, Tyrone without vendor-specific code |
 | 6-minute cache in exporter | BMC gets hit once per cycle; Prometheus polls exporter but never floods BMC |
-| 5-minute Prometheus scrape interval | Matches the cache window; 85 servers is light network load (~0.3 BMC hits/sec) |
-| Labels from inventory CSV | Vendor, site, GPU type stay attached to every metric in Grafana |
+| 5-minute Prometheus scrape interval | Matches the cache window; 245 servers is still light network load (~0.8 BMC hits/sec) |
+| Labels from inventory CSV | Vendor, site, GPU type, and hostname (optional) stay attached to every metric in Grafana |
 
 ---
 
@@ -125,7 +128,8 @@ monitoring-stack/
 │       ├── server_detail.json       ← per-server view (select by BMC IP)
 │       ├── oem_fleet.json           ← OEM + GPU type drill-down
 │       ├── gpu_temperature.json     ← fleet-wide GPU temps
-│       └── top_10_hottest_gpus.json ← top 10 with site/vendor filter
+│       ├── top_10_hottest_gpus.json ← top 10 with site/vendor filter
+│       └── gpu_count_mismatch.json  ← servers where visible GPUs != inventory gpu_count
 │
 ├── inventory.csv                 # Your BMC IP list (you maintain this)
 ├── inventory.example.csv         # Template showing the format
@@ -139,13 +143,13 @@ monitoring-stack/
 
 ## Dashboards
 
-Four dashboards are auto-provisioned. They form a drill-down chain:
+Five dashboards are auto-provisioned. They form a drill-down chain:
 
 ```
 OEM Fleet – GPU Drill-Down
   │
-  │  Pick an OEM (Dell / Supermicro / HPE / Tyrone)
-  │  Pick a GPU type (B200 / H200 / H100)
+  │  Pick an OEM (Dell / Supermicro / HPE / Lenovo)
+  │  Pick a GPU type (H200 / H100)
   │  See: Top 10 Hottest GPUs, GPU Health table, Server Health table
   │
   └─► Server Detail  (click any server in the tables or bar gauge)
@@ -158,6 +162,7 @@ OEM Fleet – GPU Drill-Down
 
 GPU Temperature          — fleet-wide time series for all GPU sensors
 Top 10 Hottest GPUs      — fleet-wide bar gauge + trend, filter by site/vendor
+GPU Count Mismatch       — servers where visible GPUs != inventory gpu_count
 ```
 
 **"Server Count" and "Total GPUs" on OEM Fleet** are inventory counts, not
@@ -175,6 +180,16 @@ recover).
 | Server Detail | OEM, GPU Type (narrow IP list), BMC IP | All panels |
 | Top 10 Hottest | Site (multi), Vendor (multi) | All panels |
 | GPU Temperature | _(none — shows all)_ | — |
+| GPU Count Mismatch | Site (multi), Vendor (multi) | All panels |
+
+**GPU Count Mismatch uses `redfish_gpu_temperature_celsius` (not `redfish_gpu_health`) as the "visible GPU"
+signal, with an explicit SuperMicro exception** (compared against 3, not `gpu_count` — see Vendor Notes) — not
+`redfish_gpu_health`, because Lenovo's firmware never exposes a GPU Processor resource at all, so `redfish_gpu_health`
+is completely absent there even though `redfish_gpu_temperature_celsius` (via a PCIe-slot-sensor fallback) is a
+genuine 1:1 match with `gpu_count`. A server that has **never once** successfully scraped has no
+`redfish_gpu_count_configured` series at all (the exporter only emits it after actually reaching the BMC), so it
+won't appear on this dashboard — those are already covered by `RedfishTargetDown` and the `up{job="redfish"}`
+panels elsewhere.
 
 ---
 
@@ -195,11 +210,14 @@ recover).
 | `redfish_power_watts` | gauge | instance, vendor, name | Node power draw |
 | `redfish_gpu_count_configured` | gauge | instance | Physical GPU count from inventory's `gpu_count` column — NOT derived from this scrape's telemetry, so it's present even when `redfish_gpu_temperature_celsius`/`redfish_gpu_health` are missing for that host (see Vendor Notes). Only emitted while the target is reachable (crawl reaches the Redfish service root) — a fully down host drops out of `sum(redfish_gpu_count_configured)` until it recovers |
 
-`instance` = BMC IP address. `vendor`, `gpu`, `site`, `gpu_count` come from
-`inventory.csv` and are attached as target labels to every metric from that
-host (Prometheus merges them in automatically) — only
-`redfish_gpu_count_configured` additionally uses `gpu_count` as its actual
-*value*, via `__param_gpu_count` (see `prometheus/prometheus.yml`).
+`instance` = BMC IP address. `vendor`, `gpu`, `site`, `gpu_count`, and the
+optional `hostname` come from `inventory.csv` and are attached as target
+labels to every metric from that host (Prometheus merges them in
+automatically) — only `redfish_gpu_count_configured` additionally uses
+`gpu_count` as its actual *value*, via `__param_gpu_count` (see
+`prometheus/prometheus.yml`). `hostname` is per-host and typically only set
+for servers you've named in inventory — blank for the rest, which is fine
+(see Step 3).
 
 **Fleet-inventory counts vs. live telemetry counts — which metric to use:**
 - "How many servers do I have?" → `count(up{job="redfish"})`. Counts every
@@ -219,7 +237,8 @@ host (Prometheus merges them in automatically) — only
 | Alert | Condition | Severity | Fires After |
 |---|---|---|---|
 | `GPUTemperatureHigh` | `redfish_gpu_temperature_celsius > 80` | warning | 5 min |
-| `HighTemperature` | `redfish_temperature_celsius > 80` | warning | 5 min |
+| `GPUHotWhileIdle` | GPU sensor > 45°C while the host's power draw trails well behind its same-vendor/GPU-count peers (bottom 15th percentile) — see the alert's own comment in `alert_rules.yml` for why this is peer-relative rather than a fleet-wide watt cutoff | warning | 15 min |
+| `HighTemperature` | `redfish_temperature_celsius > 85` | warning | 5 min |
 | `GPUFailure` | `redfish_gpu_health == 0` | critical | 5 min |
 | `ServerHealthCritical` | `redfish_system_health == 0` | critical | 5 min |
 | `PowerSupplyFailure` | `redfish_psu_health == 0` | critical | 2 min |
@@ -276,7 +295,7 @@ GRAFANA_ADMIN_PASSWORD=<your-grafana-admin-password>
 The BMC username is set in `configs/exporter.yml` (`username: monitoring` by default).
 If your BMC monitoring account has a different username, edit that file.
 
-**Per-BMC overrides** (credentials and/or crawl concurrency):
+**Per-BMC overrides** (credentials, crawl concurrency, and/or crawl budget):
 
 ```yaml
 # configs/exporter.yml
@@ -293,6 +312,25 @@ hosts:
   # lockout under concurrent Basic-Auth requests).
   "10.10.6.10":
     concurrency: 1
+  # max_resources/max_depth overrides are for BMCs whose resource graph is
+  # far larger than the fleet default budget covers — e.g. NVIDIA HGX
+  # baseboard controllers expose 40+ Chassis members alone (per-GPU ERoT
+  # security co-processor, NVSwitch, PCIeRetimer, PCIeSwitch, plus the real
+  # per-GPU chassis) and per-core CPU/per-DIMM memory detail several levels
+  # deep, several times the resource count of a typical Dell/Lenovo/
+  # SuperMicro host. Raising max_resources lets the crawl reach the real GPU
+  # chassis' Sensors/ThermalSubsystem resources instead of exhausting its
+  # budget on ERoT/NVSwitch/PCIeRetimer chassis first (the crawl visits
+  # links alphabetically, and "HGX_ERoT_GPU_SXM_*" sorts before
+  # "HGX_GPU_SXM_*"); capping max_depth lower than the fleet default trades
+  # away per-core CPU/per-drive granularity (which sits deeper) in exchange
+  # for actually finishing the crawl within scrape_timeout — GPU sensor
+  # readings sit at depth 4, per-core CPU detail at depth 6. See
+  # Troubleshooting → "GPU temperature crawl silently truncated on NVIDIA
+  # HGX baseboard controllers" for how these numbers were derived.
+  "10.10.7.10":
+    max_resources: 600
+    max_depth: 4
 ```
 
 ---
@@ -309,13 +347,13 @@ nano inventory.csv
 Format:
 
 ```
-ip,vendor,site,gpu,gpu_count
-10.10.1.10,dell,dc1,h200,8
-10.10.1.11,dell,dc1,h200,8
-10.10.2.10,supermicro,dc1,h200,8
-10.10.3.10,supermicro,dc1,h100,8
-10.10.4.10,hpe,dc1,h100,4
-10.10.5.10,tyrone,dc2,b200,8
+ip,vendor,site,gpu,gpu_count,hostname
+10.10.1.10,dell,dc1,h200,8,rack1-node1
+10.10.1.11,dell,dc1,h200,8,rack1-node2
+10.10.2.10,supermicro,dc1,h200,8,
+10.10.3.10,supermicro,dc1,h100,8,
+10.10.4.10,hpe,dc1,h100,4,
+10.10.5.10,tyrone,dc2,b200,8,
 ```
 
 **Field values:**
@@ -326,6 +364,7 @@ ip,vendor,site,gpu,gpu_count
 | `site` | any string, e.g. `dc1`, `dc2` | Your data centre name |
 | `gpu` | `b200`, `h200`, `h100` (priority) | GPU card type in that server |
 | `gpu_count` | integer, e.g. `4`, `8` | Physical GPU count in that server — see below for why this can't be inferred from live telemetry |
+| `hostname` | any string, or blank | Optional. Per-host (unlike the other fields, which are typically shared across many rows) — leave blank for hosts you haven't named. Becomes a Prometheus target label like the others, so it's usable directly as a Grafana filter/variable without any exporter changes. See `generate_targets.py`'s docstring for exactly how it's grouped into `redfish_targets.yml` |
 
 **Why `gpu_count` is a separate inventory field, not derived from sensor data:**
 GPU temperature sensor *count* is not a reliable proxy for physical GPU
@@ -360,13 +399,27 @@ Expected output format:
 ```yaml
 - targets:
     - '10.10.1.10'
-    - '10.10.1.11'
   labels:
     vendor: dell
     site: dc1
     gpu: h200
     gpu_count: "8"
+    hostname: rack1-node1
+
+- targets:
+    - '10.10.2.10'
+    - '10.10.3.10'
+  labels:
+    vendor: supermicro
+    site: dc1
+    gpu: h200
+    gpu_count: "8"
 ```
+
+Rows sharing the same (vendor, site, gpu, gpu_count, hostname) group into one target block — so
+`10.10.1.10` and `10.10.1.11` above, despite matching on everything else, land in *separate* blocks
+because each has its own distinct `hostname`, while `10.10.2.10`/`10.10.3.10` (both blank hostname)
+group together as before.
 
 ---
 
@@ -437,7 +490,7 @@ All entries under the `redfish` job should show state `UP`.
 
 `http://<vm-ip>:3000` → log in with `admin` / your password.
 
-All four dashboards are in the **Redfish Infrastructure** folder in the left nav.
+All five dashboards are in the **Redfish Infrastructure** folder in the left nav.
 Start with **OEM Fleet – GPU Drill-Down** to verify your fleet is showing up.
 
 ---
@@ -601,17 +654,101 @@ limitation, not fixable here.
 If instead the exporter logs show `401 Unauthorized` specifically on
 `/Chassis` or `/Systems` partway through the crawl (`docker compose logs
 redfish_exporter | grep <bmc-ip>`), but a manual, isolated
-`curl -u monitoring:...` to the same host succeeds every time — this is a
-known, **unresolved** issue on this fleet's NVIDIA HGX/AMI baseboard
-controllers (see Vendor Notes → HPE). Ruled out so far: wrong credentials,
-account lockout, keep-alive/connection-reuse auth bugs, client
-fingerprinting, cross-host shared-auth-backend collisions, Docker network
-path. It only reproduces during a full-fleet concurrent scrape, never in an
-isolated manual test — suspected (unconfirmed) link to congestion on the
-shared BMC/OOB network under a high `global_concurrency`. If you hit this,
-don't assume it's the same per-host credential drift covered above — verify
-with an isolated `curl` test first, since the fix for that (PATCH the
-password) won't do anything here.
+`curl -u monitoring:...` to the same host succeeds — this was previously an
+unresolved issue on this fleet's NVIDIA HGX/AMI baseboard controllers (see
+Vendor Notes → HPE), root-caused and fixed 2026-09-14: each BMC's own
+`AccountService.AccountLockoutThreshold` was `5` (30-second lockout window).
+HTTP Basic Auth re-authenticates on *every single request*, so a ~100+
+resource crawl looks like a brute-force attempt to the BMC even with fully
+correct credentials — that's what made it reproduce only under a real
+fleet-wide scrape and never in an isolated manual test (one request never
+crosses the threshold). Fix, per host, with an **Administrator** account
+(the `monitoring` account is ReadOnly and can't read/write `AccountService`
+— you'll get `Security.1.0.InsufficientPrivilege` if you try):
+
+```bash
+# 1. Check the current policy
+curl -sk -u <admin-user>:<admin-pass> https://<bmc-ip>/redfish/v1/AccountService \
+  | python3 -m json.tool
+# Look for AccountLockoutThreshold, AccountLockoutDuration,
+# AccountLockoutCounterResetAfter
+
+# 2. Get a FRESH ETag immediately before patching (a stale one from an
+#    earlier GET will 412 Precondition Failed — the ETag changes whenever
+#    anything on this resource changes, so fetch right before you write)
+etag=$(curl -sk -u <admin-user>:<admin-pass> https://<bmc-ip>/redfish/v1/AccountService \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['@odata.etag'])")
+
+# 3. Disable the lockout (0 = disabled on AMI MegaRAC firmware) — reasonable
+#    here since `monitoring` is a single-purpose, read-only automation
+#    account, not a human login that needs brute-force protection
+curl -sk -X PATCH -u <admin-user>:<admin-pass> \
+  -H 'Content-Type: application/json' -H "If-Match: $etag" \
+  -d '{"AccountLockoutThreshold": 0}' \
+  https://<bmc-ip>/redfish/v1/AccountService
+
+# 4. Verify — check the BMC's own AuditLog for new Security.1.0.LoginFailure/
+#    AccessDenied entries over the next ~15-20 min (past a full crawl cycle);
+#    none appearing is the real confirmation, not just one clean curl
+curl -sk -u <admin-user>:<admin-pass> \
+  "https://<bmc-ip>/redfish/v1/Managers/Self/LogServices/AuditLog/Entries?\$skip=<total-1>-50" \
+  | python3 -m json.tool
+```
+
+Fixing the lockout is often not the whole story — see the next entry for a
+second, independent issue on these same controllers.
+
+### GPU temperature crawl silently truncated on NVIDIA HGX baseboard controllers
+
+Even with the account lockout above fixed (or on a host that was never
+locked out), these controllers can still report `redfish_scrape_success=1`
+with `redfish_gpu_health`/`redfish_gpu_info`/`redfish_cpu_health` all
+present but **zero** `redfish_gpu_temperature_celsius` — with no error
+logged at all. This is a crawl-budget problem, not an auth problem:
+
+- These hosts expose **40+ Chassis members** alone — per-GPU `HGX_ERoT_*`
+  security co-processor, `HGX_NVSwitch_*`, `HGX_PCIeRetimer_*`,
+  `HGX_PCIeSwitch_*`, plus the real per-GPU `HGX_GPU_SXM_*` chassis —
+  several times the resource count of a typical Dell/Lenovo/SuperMicro host.
+- The crawl (`internal/collector/collector.go`) visits links in
+  **alphabetical order**, and `HGX_ERoT_GPU_SXM_*` sorts before
+  `HGX_GPU_SXM_*` — so the fleet-default `max_resources` (120) can be
+  silently exhausted on ERoT/NVSwitch/PCIeRetimer chassis before the crawl
+  ever reaches the real GPU chassis' `Sensors`/`ThermalSubsystem`
+  resources. This is a budget cutoff, not a fetch failure, so nothing gets
+  logged.
+- These hosts also expose `Systems/Self/Processors/{cpu}/SubProcessors/{core}`
+  — one resource per physical CPU core — and per-DIMM memory detail, which
+  inflates the crawl well past what raising `max_resources` alone can
+  afford within `scrape_timeout` (200s).
+
+Confirm it's this issue, not a permissions problem, by checking the
+`monitoring` account can read the real GPU chassis directly:
+
+```bash
+curl -sk -u monitoring:$REDFISH_PASSWORD \
+  https://<bmc-ip>/redfish/v1/Chassis/HGX_GPU_SXM_1/Sensors | python3 -m json.tool
+# Should return real sensor members (…_TEMP_0, …_Power_0, etc.) with no
+# access-denied error. If it does, the exporter just isn't reaching this
+# path during its own crawl — it's not a credentials/role problem.
+```
+
+Fix with a per-host override (see Setup → Per-BMC overrides for the exact
+config): raise `max_resources` well above the fleet default (600 was
+sufficient on this fleet's 8-GPU HGX hosts), **and** cap `max_depth` at 4 —
+GPU sensor readings sit at depth 4
+(`Chassis/{id}/Sensors/{reading}`), shallower than per-core CPU detail at
+depth 6, so capping depth trades away that per-core/per-drive granularity
+for these hosts specifically in exchange for actually reaching GPU thermal
+data within `scrape_timeout`. Rebuild and redeploy after editing
+`configs/exporter.yml`, since this needs the corresponding code support in
+`internal/config/config.go`/`internal/collector/collector.go` (already
+present as of this fix) — a config-only edit isn't enough on an older build:
+
+```bash
+docker compose build redfish_exporter
+docker compose up -d redfish_exporter
+```
 
 ### Config edit doesn't seem to take effect after `docker compose up -d` / `/-/reload`
 
@@ -653,10 +790,10 @@ docker exec grafana grafana cli admin reset-admin-password <new-password>
 | Vendor | BMC | GPU Thermal Coverage |
 |---|---|---|
 | Dell | iDRAC 9 / iDRAC 10 | Full — standard Redfish Thermal, one sensor per physical GPU (true 1:1), H200 baseboard sensors included |
-| Lenovo | XCC | No GPU Processor resource exposed on this fleet's firmware — the exporter falls back to reading GPU temp/health from `Chassis/.../Thermal` PCIe slot sensors (matched by name containing `gpu` or `pcie`) instead of `Systems/.../Processors`. On this fleet these are genuinely 4-GPU servers, and the fallback reports exactly 4 sensors — a true 1:1, not a coverage gap |
-| Supermicro | BMC / IPMI | **Coarser than other vendors: only 3 zone/aggregate GPU-related sensors per 8-GPU server** (`GPU Temp`, `GPU Inlet Temp`, `GPU HSC Temp`), not one per physical GPU. This is a firmware/Redfish-exposure limitation, not an exporter bug — there is currently no known Redfish path on this firmware that exposes per-GPU thermal data. This is exactly why `gpu_count` in inventory (not sensor counting) is the source of truth for GPU totals — see Step 3 and Metrics Reference |
-| HPE | iLO 5 / iLO 6, **or an embedded NVIDIA HGX/AMI MegaRAC baseboard controller** | Some hosts labeled vendor "HPE" in inventory are actually the GPU baseboard's own separate embedded BMC (AMI MegaRAC firmware, distinct from the chassis's real HPE iLO) — identifiable via `/redfish/v1/Chassis` members like `HGX_Baseboard_0`, `HGX_GPU_SXM_*`, `HGX_ERoT_*`. These report full per-GPU sensors (`GPU0_PROC`...`GPU7_PROC`) when reachable, a true 1:1. **Known issue:** these controllers' `monitoring` account can intermittently return `401 Unauthorized` on `/Systems`/`/Chassis` specifically during a full-fleet concurrent scrape, even though isolated requests always succeed — not resolved as of this writing, suspected but unconfirmed link to congestion on the shared BMC/OOB network under high `global_concurrency`. See Troubleshooting → "GPU temp data missing but scrape succeeds." |
-| Tyrone | Tyrone BMC | Verify GPU sensor path — standard `/Chassis/Thermal` preferred; OEM extension adapter needed if not standard |
+| Lenovo | XCC | No GPU Processor resource exposed on this fleet's firmware — the exporter falls back to reading GPU temp/health from `Chassis/.../Thermal` PCIe slot sensors (matched by name containing `gpu` or `pcie`) instead of `Systems/.../Processors`. On this fleet these are genuinely 4-GPU servers, and the fallback reports exactly 4 sensors — a true 1:1, not a coverage gap. **`redfish_gpu_health`/`redfish_gpu_info` are permanently absent for these hosts** (no GPU Processor resource exists to derive them from), not a bug — only temperature/health-via-the-fallback work. Any dashboard/alert built on `redfish_gpu_health` needs a Lenovo-aware, temperature-based fallback, same as the GPU Count Mismatch dashboard's own approach (see Dashboards → GPU Count Mismatch) |
+| Supermicro | BMC / IPMI | **Coarser than other vendors: only 3 zone/aggregate GPU-related sensors per 8-GPU server** (`GPU Temp`, `GPU Inlet Temp`, `GPU HSC Temp`), not one per physical GPU. This is a firmware/Redfish-exposure limitation, not an exporter bug — there is currently no known Redfish path on this firmware that exposes per-GPU thermal data. This is exactly why `gpu_count` in inventory (not sensor counting) is the source of truth for GPU totals — see Step 3 and Metrics Reference. Note: `redfish_gpu_health`/`redfish_gpu_info` *are* fully 1:1 per physical GPU on this firmware (confirmed: 8/8 health entries even when only 3/8 temperature readings are exposed) — only temperature is coarse |
+| HPE | iLO 5 / iLO 6, **or an embedded NVIDIA HGX/AMI MegaRAC baseboard controller** | Some hosts labeled vendor "HPE" in inventory are actually the GPU baseboard's own separate embedded BMC (AMI MegaRAC firmware, distinct from the chassis's real HPE iLO) — identifiable via `/redfish/v1/Chassis` members like `HGX_Baseboard_0`, `HGX_GPU_SXM_*`, `HGX_ERoT_*`. These report full per-GPU sensors (`GPU0_PROC`...`GPU7_PROC`) when reachable, a true 1:1 (6 such hosts on this fleet: `10.20.32.75/114/122/123/124/125`). **Two previously-unresolved issues here were root-caused and fixed 2026-09-14** (see Troubleshooting → "GPU temp data missing but scrape succeeds" and "GPU temperature crawl silently truncated…"): (1) each BMC's own `AccountService.AccountLockoutThreshold` (5 failed logins/30s) was tripped by Basic Auth re-authenticating on every crawl request — fixed by setting it to `0` per host; (2) these hosts' 40+-member Chassis graph (ERoT/NVSwitch/PCIeRetimer chassis alphabetically ahead of the real GPU chassis, plus per-core CPU/per-DIMM detail) silently exhausted the fleet-default crawl budget before reaching GPU sensors — fixed with a per-host `max_resources`/`max_depth` override. |
+| Tyrone | Tyrone BMC | Not currently present on this fleet — listed as a supported `vendor` value for future use. If you add Tyrone hosts, verify GPU sensor path first: standard `/Chassis/Thermal` preferred, OEM extension adapter needed if not standard |
 
 **A per-vendor BMC credential can silently drift from the fleet-wide
 default** even when nothing in this repo changed — seen on both an AMI/HGX
@@ -671,21 +808,28 @@ fleet works."
 
 ## Scaling Notes
 
-At 85 servers with a 5-minute scrape interval:
+At 245 servers with a 5-minute scrape interval:
 
-- ~0.3 BMC Redfish hits per second across the fleet — light on the management network
+- ~0.8 BMC Redfish hits per second across the fleet — still light on the management network
 - A single exporter instance is sufficient
-- `global_concurrency` in `configs/exporter.yml` is set to 30, sized so a full
-  cold-cache sweep (e.g. right after an exporter restart) finishes within the
-  6-minute cache TTL instead of queuing crawls past it — see the comment on
-  that setting for the math
-- If you later expand past ~150–200 servers with heavy Redfish payloads, run a second
-  exporter and split targets by site across two Prometheus scrape jobs
+- `global_concurrency` in `configs/exporter.yml` is set to 85 (raised from 30
+  when the fleet grew from 85 to 245 hosts), sized so a full cold-cache sweep
+  (e.g. right after an exporter restart) finishes within the 6-minute cache
+  TTL instead of queuing crawls past it — see the comment on that setting for
+  the math, and note it deliberately preserves the same ~3-batch worst-case
+  timing envelope validated at 85/30 rather than scaling 1:1 with server count
+- We're already past the ~150–200-server threshold below for running a
+  second exporter, and haven't needed to yet — a single instance still
+  clears a full cold sweep within `cache_ttl` at `global_concurrency: 85`.
+  Re-check the math in the config comment before growing further
+- If you later expand well past 245 servers with heavy Redfish payloads, run
+  a second exporter and split targets by site across two Prometheus scrape
+  jobs
 
 **When you add more servers:** re-run `generate_targets.py`, then re-check
 `global_concurrency` (`configs/exporter.yml`) and `scrape_timeout` (the
-`redfish` job in `prometheus/prometheus.yml`) — both were sized for 85 hosts.
-Rule of thumb: worst-case cold-sweep time is
+`redfish` job in `prometheus/prometheus.yml`) — both are currently sized for
+245 hosts. Rule of thumb: worst-case cold-sweep time is
 `(server_count / global_concurrency) * ~100s`; keep that comfortably under
 `cache_ttl` (6m) by raising `global_concurrency`, and keep the Prometheus
 job's `scrape_timeout` above `exporter scrape_timeout (200s) + expected queue
@@ -697,4 +841,3 @@ To run a local test without a real BMC:
 make run
 curl "http://localhost:9610/-/healthy"
 ```
->>>>>>> 880c386 (RMM Monitoring metrics working for GPU's under load)
